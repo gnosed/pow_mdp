@@ -18,7 +18,7 @@ seaborn.set_style("whitegrid")
 import sys
 
 class State:
-    def __init__(self, w_a, w_h, f_a="inactive", match="malicious"):
+    def __init__(self, w_a, w_h, f_a, match):
         self.weight_a = w_a
         self.weight_h = w_h
         self.flag_a = f_a
@@ -29,7 +29,7 @@ class State:
 
     def __eq__(self, other):
         try:
-            return (self.weight_a, self.weight_h, self.flag_a, self.match) == (other.length_a, other.length_h, other.flag_a, other.match)
+            return (self.weight_a, self.weight_h, self.flag_a, self.match) == (other.weight_a, other.weight_h, other.flag_a, other.match)
         except:
             return False
 
@@ -64,6 +64,7 @@ def optimal_strategy(p, k, stale, double_spend_value, max_blocks, gamma, cutoff,
     # randomness rho, to be replaced at the end by the appropriate function 
     r = 0.35
     s = p + (1-p)*r 
+    success = 0.85
         
     flags_attack = ["inactive", "validated", "active"]
     match_cases = ["honest", "malicious", "both"]
@@ -73,15 +74,15 @@ def optimal_strategy(p, k, stale, double_spend_value, max_blocks, gamma, cutoff,
     for w_a in xrange(cutoff + 1):
         for w_h in xrange(cutoff + 1):
             for f_a in flags_attack:
-                '''
-                if lam == 0 and f_a > 0:
-                    break
-                '''
                 for match in match_cases:
                     state = State(w_a, w_h, f_a, match)
                     states[states_counter] = state
                     states_inverted[state] = states_counter
+                    #print "state: ", state 
+                    #print "states_counter: ", states_counter
+                    #print "states_inverted[state]: ", states_inverted[state]
                     states_counter += 1
+                    
 
     # exit state
     exit_idx = states_counter
@@ -113,65 +114,76 @@ def optimal_strategy(p, k, stale, double_spend_value, max_blocks, gamma, cutoff,
 
     R_exit[exit_idx, exit_idx] = p - m_cost
 
+    np.fill_diagonal(P_hreset,1)
+    np.fill_diagonal(P_mreset,1)
+    np.fill_diagonal(P_spam,1)
+    np.fill_diagonal(P_construct,1)
+    np.fill_diagonal(P_wait,1)
+    np.fill_diagonal(P_exit,1)
+    #print P_hreset
+    #print "exit_idx: ", exit_idx
+    #print states_inverted[State(20,20,"active","both")]
+    #print states_inverted
     for state_idx, state in states.iteritems():
+        #print "state: ", state 
+        #print "states_counter: ", states_counter
+        #print "states_inverted[state]: ", states_inverted[state]
         w_a = state.weight_a
         w_h = state.weight_h
         f_a = state.flag_a
         match = state.match
-        
-        # exit
-        if w_h >= k and w_a > w_h:
-            P_exit[state_idx, exit_idx] = 1
-            R_exit[state_idx, exit_idx] = double_spend_value - m_cost
-        else:
-            # needed for stochastic matrix, not sure if there is a better way to do this
-            P_exit[state_idx, state_idx] = 1
-            R_exit[state_idx, state_idx] = -100
+       
+        if w_a == cutoff or w_h == cutoff:
+            continue
 
         # honest reset
-        if w_h > 1:
-            P_hreset[state_idx, states_inverted[State(0, 1, "inactive", "honest")]] = p
-            R_hreset[state_idx, states_inverted[State(0, 1, "inactive", "honest")]] = 0-m_cost
+        # needed for stochastic matrix, not sure if there is a better way to do this
+        P_hreset[state_idx, state_idx] = 0
+        R_hreset[state_idx, state_idx] = -100
 
-            ## miner doesn't mine the tx
-            P_hreset[state_idx, states_inverted[State(0, 0, "inactive", "honest")]] = (1-p)
-            R_hreset[state_idx, states_inverted[State(0, 0, "inactive", "honest")]] = 0-m_cost
+        P_hreset[state_idx, states_inverted[State(0, 1, "inactive", "honest")]] = p
+        R_hreset[state_idx, states_inverted[State(0, 1, "inactive", "honest")]] = 0-m_cost
 
-        else:
-            P_hreset[state_idx, state_idx] = 1
-            R_hreset[state_idx, state_idx] = -100
+        ## miner doesn't mine the tx
+        P_hreset[state_idx, states_inverted[State(0, 0, "inactive", "honest")]] = (1-p)
+        R_hreset[state_idx, states_inverted[State(0, 0, "inactive", "honest")]] = 0-m_cost
 
+        # malicious reset
+        # needed for stochastic matrix, not sure if there is a better way to do this
+        P_mreset[state_idx, state_idx] = 0
+        R_mreset[state_idx, state_idx] = -100
 
-        if w_a > 1:
-            # malicious reset
-            P_mreset[state_idx, states_inverted[State(1, 0, "inactive", "malicious")]] = p
-            R_mreset[state_idx, states_inverted[State(1, 0, "inactive", "malicious")]] = 0-m_cost
-            ## miner doesn't mine the tx
-            P_mreset[state_idx, states_inverted[State(0, 0, "inactive", "malicious")]] = (1-p)
-            R_mreset[state_idx, states_inverted[State(0, 0, "inactive", "malicious")]] = 0-m_cost
-        else:
-            P_mreset[state_idx, state_idx] = 1
-            R_mreset[state_idx, state_idx] = -100
+        P_mreset[state_idx, states_inverted[State(1, 0, "inactive", "malicious")]] = p
+        R_mreset[state_idx, states_inverted[State(1, 0, "inactive", "malicious")]] = 0-m_cost
+        ## miner doesn't mine the tx
+        P_mreset[state_idx, states_inverted[State(0, 0, "inactive", "malicious")]] = (1-p)
+        R_mreset[state_idx, states_inverted[State(0, 0, "inactive", "malicious")]] = 0-m_cost
         
         # spam
         if w_a == 0 and f_a == "inactive" and match == "honest":
-            P_spam[state_idx, states_inverted[State(0, w_h+1, "inactive", "honest")]] = s 
-            R_spam[state_idx, states_inverted[State(0, w_h+1, "inactive", "honest")]] = 0-m_cost
-
-            P_spam[state_idx, states_inverted[State(0, w_h, "inactive", "honest")]] = (1-s)
-            R_spam[state_idx, states_inverted[State(0, w_h, "inactive", "honest")]] = 0-m_cost
+            # needed for stochastic matrix, not sure if there is a better way to do this
+            P_spam[state_idx, state_idx] = 0
+            R_spam[state_idx, state_idx] = -100
 
             if w_h-1 >= k:
                 P_spam[state_idx, states_inverted[State(0, w_h+1, "validated", "honest")]] = s
                 R_spam[state_idx, states_inverted[State(0, w_h+1, "validated", "honest")]] = 0-m_cost
+
+                P_spam[state_idx, states_inverted[State(0, w_h, "inactive", "honest")]] = (1-s)
+                R_spam[state_idx, states_inverted[State(0, w_h, "inactive", "honest")]] = 0-m_cost
+
             else:
-                P_spam[state_idx, states_inverted[State(0, w_h, "validated", "honest")]] = (1-s)
-                R_spam[state_idx, states_inverted[State(0, w_h, "validated", "honest")]] = 0-m_cost
-        else:
-            P_spam[state_idx, state_idx] = 1
-            R_spam[state_idx, state_idx] = -100
+                P_spam[state_idx, states_inverted[State(0, w_h+1, "inactive", "honest")]] = s 
+                R_spam[state_idx, states_inverted[State(0, w_h+1, "inactive", "honest")]] = 0-m_cost
+
+                P_spam[state_idx, states_inverted[State(0, w_h, "inactive", "honest")]] = (1-s)
+                R_spam[state_idx, states_inverted[State(0, w_h, "inactive", "honest")]] = 0-m_cost
 
         if w_h == 0 and f_a == "inactive" and match == "malicious":
+            # needed for stochastic matrix, not sure if there is a better way to do this
+            P_spam[state_idx, state_idx] = 0
+            R_spam[state_idx, state_idx] = -100
+
             P_spam[state_idx, states_inverted[State(w_a, 1, "inactive", "both")]] = p
             R_spam[state_idx, states_inverted[State(w_a, 1, "inactive", "both")]] = 0-m_cost
 
@@ -179,41 +191,55 @@ def optimal_strategy(p, k, stale, double_spend_value, max_blocks, gamma, cutoff,
             R_spam[state_idx, states_inverted[State(w_a, 0, "inactive", "honest")]] = 0-m_cost
 
         if f_a == "inactive" and match == "both":
-            P_spam[state_idx, states_inverted[State(w_a, w_h+1, "inactive", "both")]] = s
-            R_spam[state_idx, states_inverted[State(w_a, w_h+1, "inactive", "both")]] = 0-m_cost
-            P_spam[state_idx, states_inverted[State(w_a, w_h, "inactive", "both")]] = (1-s)
-            R_spam[state_idx, states_inverted[State(w_a, w_h, "inactive", "both")]] = 0-m_cost
+            # needed for stochastic matrix, not sure if there is a better way to do this
+            P_spam[state_idx, state_idx] = 0
+            R_spam[state_idx, state_idx] = -100
+
             if w_h-1 >= k:
                 P_spam[state_idx, states_inverted[State(w_a, w_h+1, "validated", "both")]] = s
                 R_spam[state_idx, states_inverted[State(w_a, w_h+1, "validated", "both")]] = 0-m_cost
+
+                P_spam[state_idx, states_inverted[State(w_a, w_h, "inactive", "both")]] = (1-s)
+                R_spam[state_idx, states_inverted[State(w_a, w_h, "inactive", "both")]] = 0-m_cost
             else:
+                P_spam[state_idx, states_inverted[State(w_a, w_h+1, "inactive", "both")]] = s
+                R_spam[state_idx, states_inverted[State(w_a, w_h+1, "inactive", "both")]] = 0-m_cost
+
                 P_spam[state_idx, states_inverted[State(w_a, w_h, "inactive", "both")]] = (1-s)
                 R_spam[state_idx, states_inverted[State(w_a, w_h, "inactive", "both")]] = 0-m_cost
  
         # construct 
         if w_a == 0 and f_a == "inactive" and match == "honest":
-            P_construct[state_idx, states_inverted[State(1, w_h, "inactive", "both")]] = p
-            R_construct[state_idx, states_inverted[State(1, w_h, "inactive", "both")]] = 0-m_cost
+            # needed for stochastic matrix, not sure if there is a better way to do this
+            P_construct[state_idx, state_idx] = 0
+            R_construct[state_idx, state_idx] = -100
 
-            P_construct[state_idx, states_inverted[State(0, w_h+1, "inactive", "honest")]] = (1-p)*r
-            R_construct[state_idx, states_inverted[State(0, w_h+1, "inactive", "honest")]] = 0-m_cost
-
-            P_construct[state_idx, states_inverted[State(0, w_h, "inactive", "honest")]] = (1-p)*(1-r)
-            R_construct[state_idx, states_inverted[State(0, w_h, "inactive", "honest")]] = 0-m_cost
             if w_h-1 >= k:
-                P_construct[state_idx, states_inverted[State(0, w_h+1, "validated", "honest")]] = (1-p)*(1-r)
+                P_construct[state_idx, states_inverted[State(1, w_h, "inactive", "both")]] = p
+                R_construct[state_idx, states_inverted[State(1, w_h, "inactive", "both")]] = 0-m_cost
+
+                P_construct[state_idx, states_inverted[State(0, w_h+1, "validated", "honest")]] = (1-p)*r
                 R_construct[state_idx, states_inverted[State(0, w_h+1, "validated", "honest")]] = 0-m_cost
+
+                P_construct[state_idx, states_inverted[State(0, w_h, "inactive", "honest")]] = (1-p)*(1-r)
+                R_construct[state_idx, states_inverted[State(0, w_h, "inactive", "honest")]] = 0-m_cost
             else:
                 P_construct[state_idx, states_inverted[State(1, w_h, "inactive", "both")]] = p
                 R_construct[state_idx, states_inverted[State(1, w_h, "inactive", "both")]] = 0-m_cost
+
+                P_construct[state_idx, states_inverted[State(0, w_h+1, "inactive", "honest")]] = (1-p)*r
+                R_construct[state_idx, states_inverted[State(0, w_h+1, "inactive", "honest")]] = 0-m_cost
 
                 P_construct[state_idx, states_inverted[State(0, w_h, "inactive", "honest")]] = (1-p)*(1-r)
                 R_construct[state_idx, states_inverted[State(0, w_h, "inactive", "honest")]] = 0-m_cost
                 
         if w_a == 0 and f_a == "validated" and match == "honest":
+            # needed for stochastic matrix, not sure if there is a better way to do this
+            P_construct[state_idx, state_idx] = 0
+            R_construct[state_idx, state_idx] = -100
+
             P_construct[state_idx, states_inverted[State(1, w_h, "validated", "both")]] = p
             R_construct[state_idx, states_inverted[State(1, w_h, "validated", "both")]] = 0-m_cost
-
 
             P_construct[state_idx, states_inverted[State(0, w_h+1, "validated", "honest")]] = (1-p)*r
             R_construct[state_idx, states_inverted[State(0, w_h+1, "validated", "honest")]] = 0-m_cost
@@ -222,6 +248,9 @@ def optimal_strategy(p, k, stale, double_spend_value, max_blocks, gamma, cutoff,
             R_construct[state_idx, states_inverted[State(0, w_h, "validated", "honest")]] = 0-m_cost
 
         if w_h == 0 and f_a == "inactive" and match == "malicious":
+            # needed for stochastic matrix, not sure if there is a better way to do this
+            P_construct[state_idx, state_idx] = 0
+            R_construct[state_idx, state_idx] = -100
 
             P_construct[state_idx, states_inverted[State(w_a+1, 0, "inactive", "malicious")]] = p 
             R_construct[state_idx, states_inverted[State(w_a+1, 0, "inactive", "malicious")]] = 0-m_cost
@@ -230,23 +259,49 @@ def optimal_strategy(p, k, stale, double_spend_value, max_blocks, gamma, cutoff,
             R_construct[state_idx, states_inverted[State(w_a, 0, "inactive", "malicious")]] = 0-m_cost
 
         if f_a == "inactive" and match == "both":
+            # needed for stochastic matrix, not sure if there is a better way to do this
+            P_construct[state_idx, state_idx] = 0
+            R_construct[state_idx, state_idx] = -100
+
             if w_h-1 >= k:
+                P_construct[state_idx, states_inverted[State(w_a+1, w_h, "inactive", "both")]] = p 
+                R_construct[state_idx, states_inverted[State(w_a+1, w_h, "inactive", "both")]] = 0-m_cost
+
                 P_construct[state_idx, states_inverted[State(w_a, w_h+1, "validated", "both")]] = (1-p)*r 
                 R_construct[state_idx, states_inverted[State(w_a, w_h+1, "validated", "both")]] = 0-m_cost
+
+                P_construct[state_idx, states_inverted[State(w_a, w_h, "inactive", "both")]] = (1-p)*(1-r) 
+                R_construct[state_idx, states_inverted[State(w_a, w_h, "inactive", "both")]] = 0-m_cost
 
             else:
                 P_construct[state_idx, states_inverted[State(w_a+1, w_h, "inactive", "both")]] = p 
                 R_construct[state_idx, states_inverted[State(w_a+1, w_h, "inactive", "both")]] = 0-m_cost
 
+                P_construct[state_idx, states_inverted[State(w_a, w_h+1, "inactive", "both")]] = (1-p)*r 
+                R_construct[state_idx, states_inverted[State(w_a, w_h+1, "inactive", "both")]] = 0-m_cost
+
                 P_construct[state_idx, states_inverted[State(w_a, w_h, "inactive", "both")]] = (1-p)*(1-r) 
                 R_construct[state_idx, states_inverted[State(w_a, w_h, "inactive", "both")]] = 0-m_cost
 
         if f_a == "validated" and match == "both":
+            # needed for stochastic matrix, not sure if there is a better way to do this
+            P_construct[state_idx, state_idx] = 0
+            R_construct[state_idx, state_idx] = -100
+
             if w_a-1 > w_h:
                 P_construct[state_idx, states_inverted[State(w_a+1, w_h, "active", "both")]] = p 
                 R_construct[state_idx, states_inverted[State(w_a+1, w_h, "active", "both")]] = 0-m_cost
 
+                P_construct[state_idx, states_inverted[State(w_a, w_h+1, "validated", "both")]] = (1-p)*r 
+                R_construct[state_idx, states_inverted[State(w_a, w_h+1, "validated", "both")]] = 0-m_cost
+
+                P_construct[state_idx, states_inverted[State(w_a, w_h, "validated", "both")]] = (1-p)*(1-r) 
+                R_construct[state_idx, states_inverted[State(w_a, w_h, "validated", "both")]] = 0-m_cost
+
             else:
+                P_construct[state_idx, states_inverted[State(w_a+1, w_h, "validated", "both")]] = p 
+                R_construct[state_idx, states_inverted[State(w_a+1, w_h, "validated", "both")]] = 0-m_cost
+
                 P_construct[state_idx, states_inverted[State(w_a, w_h+1, "validated", "both")]] = (1-p)*r 
                 R_construct[state_idx, states_inverted[State(w_a, w_h+1, "validated", "both")]] = 0-m_cost
 
@@ -255,53 +310,86 @@ def optimal_strategy(p, k, stale, double_spend_value, max_blocks, gamma, cutoff,
 
         # wait 
         if w_a == 0 and f_a == "inactive" and match == "honest":
-            P_wait[state_idx, states_inverted[State(0, w_h+1, "inactive", "honest")]] = (1-p)*r
-            R_wait[state_idx, states_inverted[State(0, w_h+1, "inactive", "honest")]] = 0 
+            # needed for stochastic matrix, not sure if there is a better way to do this
+            P_wait[state_idx, state_idx] = 0
+            R_wait[state_idx, state_idx] = -100
 
-
-            P_wait[state_idx, states_inverted[State(0, w_h, "inactive", "honest")]] = 1-(1-p)*r
-            R_wait[state_idx, states_inverted[State(0, w_h, "inactive", "honest")]] = 0 
-            
-        if w_a == 0 and f_a == "inactive" and match == "honest":
             if w_h-1 >= k:
                 P_wait[state_idx, states_inverted[State(0, w_h+1, "validated", "honest")]] = (1-p)*r
                 R_wait[state_idx, states_inverted[State(0, w_h+1, "validated", "honest")]] = 0 
 
+                P_wait[state_idx, states_inverted[State(0, w_h, "inactive", "honest")]] = 1-((1-p)*r)
+                R_wait[state_idx, states_inverted[State(0, w_h, "inactive", "honest")]] = 0
+
             else:
-                P_wait[state_idx, states_inverted[State(0, w_h, "inactive", "honest")]] = 1-(1-p)*r
+                P_wait[state_idx, states_inverted[State(0, w_h+1, "inactive", "honest")]] = (1-p)*r
+                R_wait[state_idx, states_inverted[State(0, w_h+1, "inactive", "honest")]] = 0 
+
+                P_wait[state_idx, states_inverted[State(0, w_h, "inactive", "honest")]] = 1-((1-p)*r)
                 R_wait[state_idx, states_inverted[State(0, w_h, "inactive", "honest")]] = 0
 
         if f_a == "inactive" and match == "both":
-            P_wait[state_idx, states_inverted[State(w_a, w_h+1, "inactive", "both")]] = (1-p)*r
-            R_wait[state_idx, states_inverted[State(w_a, w_h+1, "inactive", "both")]] = 0 
+            # needed for stochastic matrix, not sure if there is a better way to do this
+            P_wait[state_idx, state_idx] = 0
+            R_wait[state_idx, state_idx] = -100
 
-            P_wait[state_idx, states_inverted[State(w_a, w_h, "inactive", "both")]] = 1-(1-p)*r
-            R_wait[state_idx, states_inverted[State(w_a, w_h, "inactive", "both")]] = 0
-
-        if f_a == "inactive" and match == "both":
             if w_h-1 >= k:
                 P_wait[state_idx, states_inverted[State(w_a, w_h+1, "validated", "both")]] = (1-p)*r
                 R_wait[state_idx, states_inverted[State(w_a, w_h+1, "validated", "both")]] = 0 
 
+                P_wait[state_idx, states_inverted[State(w_a, w_h, "inactive", "both")]] = 1-((1-p)*r)
+                R_wait[state_idx, states_inverted[State(w_a, w_h, "inactive", "both")]] = 0
+
             else:
-                P_wait[state_idx, states_inverted[State(w_a, w_h, "inactive", "both")]] = 1-(1-p)*r
+                P_wait[state_idx, states_inverted[State(w_a, w_h+1, "inactive", "both")]] = (1-p)*r
+                R_wait[state_idx, states_inverted[State(w_a, w_h+1, "inactive", "both")]] = 0 
+
+                P_wait[state_idx, states_inverted[State(w_a, w_h, "inactive", "both")]] = 1-((1-p)*r)
                 R_wait[state_idx, states_inverted[State(w_a, w_h, "inactive", "both")]] = 0
 
         if f_a == "validated" and match == "both":
+            # needed for stochastic matrix, not sure if there is a better way to do this
+            P_wait[state_idx, state_idx] = 0
+            R_wait[state_idx, state_idx] = -100
+
             P_wait[state_idx, states_inverted[State(w_a, w_h+1, "validated", "both")]] = (1-p)*r
             R_wait[state_idx, states_inverted[State(w_a, w_h+1, "validated", "both")]] = 0 
 
-            P_wait[state_idx, states_inverted[State(w_a, w_h, "validated", "both")]] = 1-(1-p)*r
+            P_wait[state_idx, states_inverted[State(w_a, w_h, "validated", "both")]] = 1-((1-p)*r)
             R_wait[state_idx, states_inverted[State(w_a, w_h, "validated", "both")]] = 0
 
         if f_a == "active" and match == "both":
+            # needed for stochastic matrix, not sure if there is a better way to do this
+            P_wait[state_idx, state_idx] = 0
+            R_wait[state_idx, state_idx] = -100
+
             if w_h-1 >= w_a:
                 P_wait[state_idx, states_inverted[State(w_a, w_h+1, "validated", "both")]] = (1-p)*r
                 R_wait[state_idx, states_inverted[State(w_a, w_h+1, "validated", "both")]] = 0 
 
+                P_wait[state_idx, states_inverted[State(w_a, w_h, "validated", "both")]] = 1-((1-p)*r)
+                R_wait[state_idx, states_inverted[State(w_a, w_h, "validated", "both")]] = 0
+
             else:
-                P_wait[state_idx, states_inverted[State(w_a, w_h, "active", "both")]] = 1-(1-p)*r
+                P_wait[state_idx, states_inverted[State(w_a, w_h+1, "active", "both")]] = (1-p)*r
+                R_wait[state_idx, states_inverted[State(w_a, w_h+1, "active", "both")]] = 0 
+
+                P_wait[state_idx, states_inverted[State(w_a, w_h, "active", "both")]] = 1-((1-p)*r)
                 R_wait[state_idx, states_inverted[State(w_a, w_h, "active", "both")]] = 0
+
+        # exit
+        if f_a == "active" and match == "both":
+            # needed for stochastic matrix, not sure if there is a better way to do this
+            P_exit[state_idx, state_idx] = 0
+            R_exit[state_idx, state_idx] = -100
+
+            P_exit[state_idx, exit_idx] = success
+            R_exit[state_idx, exit_idx] = double_spend_value - m_cost
+            
+            P_exit[state_idx, states_inverted[State(w_a, w_h, "active", "both")]] = 1-success
+            R_exit[state_idx, states_inverted[State(w_a, w_h, "active", "both")]] = 0
+
+    #print P_hreset 
     P = [P_hreset, P_mreset, P_spam, P_construct, P_wait, P_exit]
     R = [R_hreset, R_mreset, R_spam, R_construct, R_wait, R_exit]
     for i,p in enumerate(P):
@@ -320,7 +408,7 @@ def optimal_strategy(p, k, stale, double_spend_value, max_blocks, gamma, cutoff,
     return mdp, states
 
 def state_graph(states, transitions, policy):
-    policy_colors = ["blue", "red", "grey", "yellow", "green"]
+    policy_colors = ["blue", "red", "grey", "yellow", "green", "orange"]
     G = nx.DiGraph()
     q = Queue.Queue()
     visited = [False]*len(states)
@@ -530,7 +618,7 @@ def main():
         return
     stale = 0.0041
     k = 6
-    hashrate_k_plot(stale, gamma, cost, cutoff=20)
+    hashrate_k_plot(stale, gamma, cost, cutoff=2)
 
 if __name__=="__main__":
     main()
