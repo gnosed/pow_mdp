@@ -18,7 +18,7 @@ seaborn.set_style("whitegrid")
 import sys
 
 class State:
-    def __init__(self, w_a, w_h, f_a, match="inactive"):
+    def __init__(self, w_a, w_h, f_a="inactive", match="malicious"):
         self.weight_a = w_a
         self.weight_h = w_h
         self.flag_a = f_a
@@ -29,7 +29,7 @@ class State:
 
     def __eq__(self, other):
         try:
-            return (self.weight_a, self.weight_h, self.flag_a, self.match) == (other.length_a, other.length_h, other.blocks_e, other.match)
+            return (self.weight_a, self.weight_h, self.flag_a, self.match) == (other.length_a, other.length_h, other.flag_a, other.match)
         except:
             return False
 
@@ -37,7 +37,7 @@ class State:
         return not(self == other)
 
     def __repr__(self):
-        return "(%d, %d, %d, %s)" % (self.weight_a, self.weight_h, self.flag_a, self.match)
+        return "(%d, %d, %s, %s)" % (self.weight_a, self.weight_h, self.flag_a, self.match)
 
 def namestr(obj, namespace):
     return [name for name in namespace if namespace[name] is obj]
@@ -120,7 +120,7 @@ def optimal_strategy(p, k, stale, double_spend_value, max_blocks, gamma, cutoff,
         match = state.match
         
         # exit
-        if w_h > k and w_a > w_h:
+        if w_h >= k and w_a > w_h:
             P_exit[state_idx, exit_idx] = 1
             R_exit[state_idx, exit_idx] = double_spend_value - m_cost
         else:
@@ -129,19 +129,29 @@ def optimal_strategy(p, k, stale, double_spend_value, max_blocks, gamma, cutoff,
             R_exit[state_idx, state_idx] = -100
 
         # honest reset
-        P_hreset[state_idx, states_inverted[State(0, 1, "inactive", "honest")]] = p
-        R_hreset[state_idx, states_inverted[State(0, 1, "inactive", "honest")]] = 0-m_cost
-        
-        ## miner doesn't mine the tx
-        P_hreset[state_idx, states_inverted[State(0, 0, "inactive", "honest")]] = (1-p)
-        R_hreset[state_idx, states_inverted[State(0, 0, "inactive", "honest")]] = 0-m_cost
+        if w_h > 1:
+            P_hreset[state_idx, states_inverted[State(0, 1, "inactive", "honest")]] = p
+            R_hreset[state_idx, states_inverted[State(0, 1, "inactive", "honest")]] = 0-m_cost
 
-        # malicious reset
-        P_mreset[state_idx, states_inverted[State(1, 0, "inactive", "malicious")]] = p
-        R_mreset[state_idx, states_inverted[State(1, 0, "inactive", "malicious")]] = 0-m_cost
-        ## miner doesn't mine the tx
-        P_mreset[state_idx, states_inverted[State(0, 0, "inactive", "malicious")]] = (1-p)
-        R_mreset[state_idx, states_inverted[State(0, 0, "inactive", "malicious")]] = 0-m_cost
+            ## miner doesn't mine the tx
+            P_hreset[state_idx, states_inverted[State(0, 0, "inactive", "honest")]] = (1-p)
+            R_hreset[state_idx, states_inverted[State(0, 0, "inactive", "honest")]] = 0-m_cost
+
+        else:
+            P_hreset[state_idx, state_idx] = 1
+            R_hreset[state_idx, state_idx] = -100
+
+
+        if w_a > 1:
+            # malicious reset
+            P_mreset[state_idx, states_inverted[State(1, 0, "inactive", "malicious")]] = p
+            R_mreset[state_idx, states_inverted[State(1, 0, "inactive", "malicious")]] = 0-m_cost
+            ## miner doesn't mine the tx
+            P_mreset[state_idx, states_inverted[State(0, 0, "inactive", "malicious")]] = (1-p)
+            R_mreset[state_idx, states_inverted[State(0, 0, "inactive", "malicious")]] = 0-m_cost
+        else:
+            P_mreset[state_idx, state_idx] = 1
+            R_mreset[state_idx, state_idx] = -100
         
         # spam
         if w_a == 0 and f_a == "inactive" and match == "honest":
@@ -157,6 +167,9 @@ def optimal_strategy(p, k, stale, double_spend_value, max_blocks, gamma, cutoff,
             else:
                 P_spam[state_idx, states_inverted[State(0, w_h, "validated", "honest")]] = (1-s)
                 R_spam[state_idx, states_inverted[State(0, w_h, "validated", "honest")]] = 0-m_cost
+        else:
+            P_spam[state_idx, state_idx] = 1
+            R_spam[state_idx, state_idx] = -100
 
         if w_h == 0 and f_a == "inactive" and match == "malicious":
             P_spam[state_idx, states_inverted[State(w_a, 1, "inactive", "both")]] = p
@@ -289,7 +302,6 @@ def optimal_strategy(p, k, stale, double_spend_value, max_blocks, gamma, cutoff,
             else:
                 P_wait[state_idx, states_inverted[State(w_a, w_h, "active", "both")]] = 1-(1-p)*r
                 R_wait[state_idx, states_inverted[State(w_a, w_h, "active", "both")]] = 0
-    
     P = [P_hreset, P_mreset, P_spam, P_construct, P_wait, P_exit]
     R = [R_hreset, R_mreset, R_spam, R_construct, R_wait, R_exit]
     for i,p in enumerate(P):
