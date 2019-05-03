@@ -16,6 +16,11 @@ import seaborn
 seaborn.set(font_scale=2.3)
 seaborn.set_style("whitegrid")
 import sys
+import datetime
+
+now = datetime.datetime.now()
+from multiprocessing import Process
+import os
 
 class State:
     def __init__(self, w_a, w_h, f_a, match):
@@ -42,7 +47,39 @@ class State:
 def namestr(obj, namespace):
     return [name for name in namespace if namespace[name] is obj]
 
-def optimal_strategy(p, k, stale, double_spend_value, max_blocks, gamma, cutoff, m_cost, lam=0):
+# approximation taken from the paper "probability of having left behind tips"
+def poblb(alpha): 
+    r = (-1)*3.0069930070036804e-002 * np.power(alpha,0) +  3.4366744366776230e+000 * np.power(alpha,1) + (-1)*4.4160839160989482e+000 * np.power(alpha,2) +  1.2626262626494620e+000 * np.power(alpha,3) +  6.9930069928938809e-001 * np.power(alpha,4)  
+    if r > 1: 
+        r = 1
+    elif r < 0:
+        r = 0
+
+    return r 
+
+# probability of NOT having left behind tips i.e probability of the tips being choosen
+def ponblb(alpha):
+    return 1-poblb(alpha)
+
+clamp = lambda n, minn, maxn: max(min(maxn, n), minn)
+
+def rho(weight_h, alpha):
+    r = ponblb(alpha) + (ponblb(clamp(1-alpha, 0, 1))*weight_h)/100
+    
+    if alpha == 1:
+        r = ponblb(alpha) + (ponblb(0.01)*weight_h)/100
+
+    return clamp(r, 0, 1)
+
+def success(weight_a, weight_h, alpha):
+    if weight_a > 0 and weight_h > 0:
+        r = weight_a/(weight_a + (weight_h*np.exp((-1)*alpha*(abs(weight_a - weight_h)))))
+    else: 
+        r = 0
+
+    return clamp(r, 0, 1)
+
+def optimal_strategy(p, k, stale, double_spend_value, max_blocks, gamma, cutoff, m_cost, alpha):
     """
     p: attacker hashrate as fraction of total hashrate
     stale_rate: rate of stale blocks in honest network
@@ -58,13 +95,14 @@ def optimal_strategy(p, k, stale, double_spend_value, max_blocks, gamma, cutoff,
         q*(1-stale) probability that the honest chain grows (in each step)
         q*stale probability that state stays the same
     """
+    lam=0
     states = {}
     states_inverted = {}
     q = 1.0-p-lam
     # randomness rho, to be replaced at the end by the appropriate function 
-    r = 0.35
-    s = p + (1-p)*r 
-    success = 0.85
+    #r = rho(w_h, alpha)
+    #s = p + (1-p)*r 
+    #success = success(w_a, w_h, alpha)
         
     flags_attack = ["inactive", "validated", "active"]
     match_cases = ["honest", "malicious", "both"]
@@ -114,12 +152,14 @@ def optimal_strategy(p, k, stale, double_spend_value, max_blocks, gamma, cutoff,
 
     R_exit[exit_idx, exit_idx] = p - m_cost
 
+    # needed for stochastic matrix, not sure if there is a better way to do this
     np.fill_diagonal(P_hreset,1)
     np.fill_diagonal(P_mreset,1)
     np.fill_diagonal(P_spam,1)
     np.fill_diagonal(P_construct,1)
     np.fill_diagonal(P_wait,1)
     np.fill_diagonal(P_exit,1)
+
     #print P_hreset
     #print "exit_idx: ", exit_idx
     #print states_inverted[State(20,20,"active","both")]
@@ -132,6 +172,12 @@ def optimal_strategy(p, k, stale, double_spend_value, max_blocks, gamma, cutoff,
         w_h = state.weight_h
         f_a = state.flag_a
         match = state.match
+
+        r = rho(w_h, alpha)
+        #r = 0.3
+        s = p + (1-p)*r 
+        succ = success(w_a, w_h, alpha)
+        #succ = 0.6
        
         if w_a == cutoff or w_h == cutoff:
             continue
@@ -383,10 +429,10 @@ def optimal_strategy(p, k, stale, double_spend_value, max_blocks, gamma, cutoff,
             P_exit[state_idx, state_idx] = 0
             R_exit[state_idx, state_idx] = -100
 
-            P_exit[state_idx, exit_idx] = success
+            P_exit[state_idx, exit_idx] = succ
             R_exit[state_idx, exit_idx] = double_spend_value - m_cost
             
-            P_exit[state_idx, states_inverted[State(w_a, w_h, "active", "both")]] = 1-success
+            P_exit[state_idx, states_inverted[State(w_a, w_h, "active", "both")]] = 1-succ
             R_exit[state_idx, states_inverted[State(w_a, w_h, "active", "both")]] = 0
 
     #print P_hreset 
@@ -407,8 +453,9 @@ def optimal_strategy(p, k, stale, double_spend_value, max_blocks, gamma, cutoff,
     mdp.run()
     return mdp, states
 
+
 def state_graph(states, transitions, policy):
-    policy_colors = ["blue", "red", "grey", "yellow", "green", "orange"]
+    policy_colors = ["blue", "red", "grey", "yellow", "green", "magenta"]
     G = nx.DiGraph()
     q = Queue.Queue()
     visited = [False]*len(states)
@@ -431,7 +478,7 @@ def state_graph(states, transitions, policy):
 
 
 def state_table(states, transitions, policy, cutoff):
-    policy_letter = ["w", "a", "o", "m", "e"]
+    policy_letter = ["hr", "mr", "s", "c", "e"]
     q = Queue.Queue()
     table = [[['*']*3]*cutoff]*cutoff
     visited = [False]*len(states)
@@ -472,46 +519,87 @@ def print_table(table):
     print (r"\bottomrule")
     print (r"\end{tabular}")
 
-def hashrate_k_plot(stale, gamma, cost, cutoff=20):
-    ps = np.arange(0.025, 0.5, 0.025)
+def hashrate_k_plot(stale, gamma, cost, cutoff=20, als=0):
+    #ps = np.arange(0.025, 0.5, 0.025)
+    #ks = np.arange(0, 13, 1)
+    ps = np.arange(0.1, 0.5, 0.1)
     ks = np.arange(0, 13, 1)
+    #als = np.arange(0, 1, 0.1) 
+    '''
+    ps = np.arange(0.1, 0.3, 0.1)
+    ks = np.arange(1, 2, 1)
+    als = np.arange(0, 0.1, 0.1) 
+    '''
+    dsi = np.zeros([len(ps), len(ks), len(als)])
     ds = np.zeros([len(ps), len(ks)])
+    ds_pa = np.zeros([len(ps), len(als)])
+    ds_p = np.zeros([len(ps)])
+    ds_a = np.zeros([len(als)])
+    ds_k = np.zeros([len(ks)])
+    #ds_2 = np.zeros([len(ps), len(als)])
+    #ds_3 = np.z#eros([len(ks), len(als)])
     max_val = 1000000000
+    #max_val = 10000
+    #max_val = 122 
     eps = 0.1
-    for p_idx, p in enumerate(ps):
-        for k_idx, k in enumerate(ks):
-            m_cost = cost*p
-            double_spend_value = max_val/2
-            if k_idx > 0 and ds[p_idx, k_idx-1] > max_val - eps:
-                double_spend_value = max_val
-            last_value = 0
-            diff = max_val/2
-            lower = 0
-            upper = max_val
-            while diff > eps:
-                print (p, k, double_spend_value)
-                mdp,states = optimal_strategy(p, k, stale, double_spend_value, None, gamma,cutoff, m_cost)
-                G = state_graph(states, mdp.P, mdp.policy)
-                diff = abs(last_value - double_spend_value)
-                if G.has_node("exit"):
-                    print ("exit")
-                    last_value = double_spend_value
-                    upper = double_spend_value
-                    double_spend_value -= (double_spend_value - lower)/2.0
-                else:
-                    last_value = double_spend_value
-                    lower = double_spend_value
-                    double_spend_value += (upper - double_spend_value)/2.0
-            ds[p_idx, k_idx] = last_value
-    np.save("hashrate_k_double_spend_co%dg%.2fs%.4fc%.2f.npy" % (cutoff, gamma, stale, cost), ds)
-    plt.pcolor(ps, ks, ds.T, norm=LogNorm(vmin=ds.min(), vmax=ds.max()))
+    for alpha_idx, alpha in enumerate(als):
+        for p_idx, p in enumerate(ps):
+            for k_idx, k in enumerate(ks):
+                m_cost = cost*p
+                double_spend_value = max_val/2
+                if k_idx > 0 and ds[p_idx, k_idx-1] > max_val - eps:
+                    double_spend_value = max_val
+                last_value = 0
+                diff = max_val/2
+                lower = 0
+                upper = max_val
+                while diff > eps:
+                    print ("mp_a: ", p,"k: ", k,"dv: ", double_spend_value, "alpha: ", alpha, "pid: ", os.getpid())
+                    mdp,states = optimal_strategy(p, k, stale, double_spend_value, None, gamma, cutoff, m_cost, alpha)
+                    G = state_graph(states, mdp.P, mdp.policy)
+                    diff = abs(last_value - double_spend_value)
+                    if G.has_node("exit"):
+                        print ("exit")
+                        last_value = double_spend_value
+                        upper = double_spend_value
+                        double_spend_value -= (double_spend_value - lower)/2.0
+                    else:
+                        last_value = double_spend_value
+                        lower = double_spend_value
+                        double_spend_value += (upper - double_spend_value)/2.0
+                ds[p_idx, k_idx] = last_value
+                dsi[p_idx, k_idx, alpha_idx] = last_value
+                ds_pa[p_idx, alpha_idx] = last_value
+                ds_p[p_idx] = last_value
+                ds_a[alpha_idx] = last_value
+                ds_k[k_idx] = last_value
+                #ds_2[p_idx, alpha_idx] = last_value
+                #ds_3[k_idx, alpha_idx] = last_value
+     #np.save("hashrate_k_double_spend_co%dg%.2fs%.4fc%.2f%s.npy" % (cutoff, gamma, stale, cost, now.strftime("%Y-%m-%d_%H:%M")), ds)
+    np.save("%d_double_spend_pk_cutoff%dcost%.2f-%s.npy" % (os.getpid(), cutoff, cost, now.strftime("%Y-%m-%d_%H:%M")), ds)
+    np.save("%d_double_spend_pkalpha_cutoff%dcost%.2f-%s.npy" % (os.getpid(), cutoff, cost, now.strftime("%Y-%m-%d_%H:%M")), dsi)
+    np.save("%d_double_spend_p_cutoff%dcost%.2f-%s.npy" % (os.getpid(), cutoff, cost, now.strftime("%Y-%m-%d_%H:%M")), ds_p)
+    np.save("%d_double_spend_a_cutoff%dcost%.2f-%s.npy" % (os.getpid(), cutoff, cost, now.strftime("%Y-%m-%d_%H:%M")), ds_a)
+    np.save("%d_double_spend_k_cutoff%dcost%.2f-%s.npy" % (os.getpid(), cutoff, cost, now.strftime("%Y-%m-%d_%H:%M")), ds_k)
+    plt.pcolor(ps, als, ds_pa.T, norm=LogNorm(vmin=ds_pa.min(), vmax=ds_pa.max()))
     cbar = plt.colorbar()
     cbar.set_label("double spend value")
     plt.ylabel("k")
     plt.xlabel("p")
-    plt.savefig("hashrate_k_double_spend_co%dg%.2fs%.4fc%.2f.png" % (cutoff, gamma, stale, cost))
+    plt.savefig("double_spend_pk_cutoff%dcost%.2f-%s.png" % (cutoff, cost, now.strftime("%Y-%m-%d_%H:%M")))
     plt.close()
-
+    
+    '''
+    #print ds
+    #print dsi 
+    #print ds_pa
+    plt.plot(ps, norm=LogNorm(vmin=ds_pa.min(), vmax=ds_pa.max()))
+    plt.ylabel("double spending value")
+    plt.xlabel("mining power")
+    plt.savefig("double_spend_pdv_cutoff%dcost%.2f-%s.png" % (cutoff, cost, now.strftime("%Y-%m-%d_%H:%M")))
+    #plt.savefig("hashrate_k_double_spend_co%dg%.2fs%.4fc%.2f%s.png" % (cutoff, gamma, stale, cost, now.strftime("%Y-%m-%d_%H:%M")))
+    plt.close()
+    '''
 def hashrate_lam_plot(stale, gamma, cost, cutoff=20, k=6):
     ps = np.arange(0.025, 0.5, 0.025)
     lams = np.arange(0.0, 0.5, 0.025)
@@ -608,6 +696,32 @@ def exp_blocks_needed(p, k, stale, gamma, double_spend_value, m_cost, cutoff=20)
 
 
 def main():
+    log_a00 = np.loadtxt(open("/home/gno/Dropbox/eth/bathesis/pow_mdp/mdp_results/log_simulation00.csv", "rb"), delimiter=",", skiprows=1)
+    log_a02 = np.loadtxt(open("/home/gno/Dropbox/eth/bathesis/pow_mdp/mdp_results/log_simulation02.csv", "rb"), delimiter=",", skiprows=1)
+    log_a04 = np.loadtxt(open("/home/gno/Dropbox/eth/bathesis/pow_mdp/mdp_results/log_simulation04.csv", "rb"), delimiter=",", skiprows=1)
+    log_a06 = np.loadtxt(open("/home/gno/Dropbox/eth/bathesis/pow_mdp/mdp_results/log_simulation06.csv", "rb"), delimiter=",", skiprows=1)
+    log_a08 = np.loadtxt(open("/home/gno/Dropbox/eth/bathesis/pow_mdp/mdp_results/log_simulation08.csv", "rb"), delimiter=",", skiprows=1)
+
+    mp_a00 = log_a00[:,0]
+    dv_a00 = log_a00[:,2]
+    #
+    mp_a02 = log_a02[:,0]
+    dv_a02 = log_a02[:,2]
+    #
+    mp_a04 = log_a04[:,0]
+    dv_a04 = log_a04[:,2]
+    #
+    mp_a06 = log_a06[:,0]
+    dv_a06 = log_a06[:,2]
+    #
+    mp_a08 = log_a08[:,0]
+    dv_a08 = log_a08[:,2]
+    
+    y = dv_a00[:105]
+    x = np.arange(0, 105, 1)
+    plt.plot(x, y)
+    plt.show()
+    '''
     l = len(sys.argv)
     if l >=3:
         cost = float(sys.argv[1])
@@ -618,7 +732,42 @@ def main():
         return
     stale = 0.0041
     k = 6
-    hashrate_k_plot(stale, gamma, cost, cutoff=2)
+    cutoff = 20
+    '''
+    '''
+    sa = np.arange(0,1.1,0.1)
+    for ax, a in enumerate(sa):
+    #    print a, ponblb(a), poblb(a)
+        for i in xrange(0,200):
+            print i, a, rho(i,a)
+    '''
+    #hashrate_k_plot(stale, gamma, cost, cutoff) 
+    '''
+    als = np.arange(0, 0.2, 0.1) 
+    p1 = Process(target=hashrate_k_plot, args=(stale, gamma, cost, cutoff, als))
+
+    als = np.arange(0.2, 0.4, 0.1) 
+    p2 = Process(target=hashrate_k_plot, args=(stale, gamma, cost, cutoff, als))
+
+    als = np.arange(0.4, 0.6, 0.1) 
+    p3 = Process(target=hashrate_k_plot, args=(stale, gamma, cost, cutoff, als))
+
+    als = np.arange(0.6, 0.8, 0.1) 
+    p4 = Process(target=hashrate_k_plot, args=(stale, gamma, cost, cutoff, als))
+
+    als = np.arange(0.8, 1.01, 0.1) 
+    p5 = Process(target=hashrate_k_plot, args=(stale, gamma, cost, cutoff, als))
+    p1.start()
+    p2.start()
+    p3.start()
+    p4.start()
+    p5.start()
+    p1.join()
+    p2.join()
+    p3.join()
+    p4.join()
+    p5.join()
+    '''
 
 if __name__=="__main__":
     main()
